@@ -1,115 +1,108 @@
 ﻿using Azure;
-using System;
 using Azure.AI.TextAnalytics;
-using System.Threading.Tasks;
-using System.Collections.Generic;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using System.Text;
 
-namespace Example
+// Method for summarizing text
+static async Task<string> AISummarizeText(TextAnalyticsClient client, string document, ILogger logger)
 {
-    class Program
+    var summarizedText = new StringBuilder();
+    
+    // Prepare analyze operation input. You can add multiple documents to this list and perform the same
+    // operation to all of them.
+    var batchInput = new List<string>
     {
+        document
+    };
 
-        private static readonly AzureKeyCredential credentials = new AzureKeyCredential(Environment.GetEnvironmentVariable("AI_SECRET") ?? "SETENVVAR!");
-        private static readonly Uri endpoint = new Uri(Environment.GetEnvironmentVariable("AI_URL") ?? "SETENVVAR!");
+    TextAnalyticsActions actions = new TextAnalyticsActions()
+    {
+        ExtractSummaryActions = new List<ExtractSummaryAction>() { new ExtractSummaryAction() }
+    };
 
-        // Method for summarizing text
-        static async Task<string> AISummarizeText(TextAnalyticsClient client, string document, ILogger logger)
+    // Start analysis process.
+    AnalyzeActionsOperation operation = await client.StartAnalyzeActionsAsync(batchInput, actions);
+    await operation.WaitForCompletionAsync();
+    // View operation status.
+
+    summarizedText.AppendLine($@"AnalyzeActions operation has completed
+Created On   : {operation.CreatedOn}
+Expires On   : {operation.ExpiresOn}
+Id           : {operation.Id}
+Status       : {operation.Status}");
+
+    //If you like it indenting in code better you can also do this of course (this is probably more idiomatic):
+    /*
+    summarizedText.AppendLine("AnalyzeActions operation has completed");
+    summarizedText.AppendLine($"Created On   : {operation.CreatedOn}");
+    summarizedText.AppendLine($"Expires On   : {operation.ExpiresOn}");
+    summarizedText.AppendLine($"Id           : {operation.Id}");
+    summarizedText.AppendLine($"Status       : {operation.Status}");
+    */
+
+    // View operation results.
+    await foreach (AnalyzeActionsResult documentsInPage in operation.Value)
+    {
+        IReadOnlyCollection<ExtractSummaryActionResult> summaryResults = documentsInPage.ExtractSummaryResults;
+
+        foreach (ExtractSummaryActionResult summaryActionResults in summaryResults)
         {
-
-            string summarizedText = "";
-            
-            // Prepare analyze operation input. You can add multiple documents to this list and perform the same
-            // operation to all of them.
-            var batchInput = new List<string>
+            if (summaryActionResults.HasError)
             {
-                document
-            };
-
-            TextAnalyticsActions actions = new TextAnalyticsActions()
-            {
-                ExtractSummaryActions = new List<ExtractSummaryAction>() { new ExtractSummaryAction() }
-            };
-
-            // Start analysis process.
-            AnalyzeActionsOperation operation = await client.StartAnalyzeActionsAsync(batchInput, actions);
-            await operation.WaitForCompletionAsync();
-            // View operation status.
-            summarizedText += $"AnalyzeActions operation has completed" + Newline();
-            summarizedText += $"Created On   : {operation.CreatedOn}" + Newline();
-            summarizedText += $"Expires On   : {operation.ExpiresOn}" + Newline();
-            summarizedText += $"Id           : {operation.Id}" + Newline();
-            summarizedText += $"Status       : {operation.Status}" + Newline();
-
-            // View operation results.
-            await foreach (AnalyzeActionsResult documentsInPage in operation.Value)
-            {
-                IReadOnlyCollection<ExtractSummaryActionResult> summaryResults = documentsInPage.ExtractSummaryResults;
-
-                foreach (ExtractSummaryActionResult summaryActionResults in summaryResults)
-                {
-                    if (summaryActionResults.HasError)
-                    {
-                        logger.LogError($"  Error!");
-                        logger.LogError($"  Action error code: {summaryActionResults.Error.ErrorCode}.");
-                        logger.LogError($"  Message: {summaryActionResults.Error.Message}");
-                        continue;
-                    }
-
-                    foreach (ExtractSummaryResult documentResults in summaryActionResults.DocumentsResults)
-                    {
-                        if (documentResults.HasError)
-                        {
-                            logger.LogError($"  Error!");
-                            logger.LogError($"  Document error code: {documentResults.Error.ErrorCode}.");
-                            logger.LogError($"  Message: {documentResults.Error.Message}");
-                            continue;
-                        }
-
-                        summarizedText += $"  Extracted the following {documentResults.Sentences.Count} sentence(s):" + Newline();
-
-
-                        foreach (SummarySentence sentence in documentResults.Sentences)
-                        {
-                            summarizedText += $"  Sentence: {sentence.Text}" + Newline();
-                        }
-                    }
-                }
+                logger.LogError($"  Error!");
+                logger.LogError($"  Action error code: {summaryActionResults.Error.ErrorCode}.");
+                logger.LogError($"  Message: {summaryActionResults.Error.Message}");
+                continue;
             }
 
-            logger.LogInformation("Returning summarized text: " + Newline + summarizedText);
-            return summarizedText;
-        }
-
-        static string Newline()
-        {
-            return "\r\n";
-        }
-        static async Task Main(string[] args)
-        {
-            using var loggerFactory = LoggerFactory.Create(builder =>
+            foreach (ExtractSummaryResult documentResults in summaryActionResults.DocumentsResults)
             {
-                builder
-                    .AddFilter("Microsoft", LogLevel.Warning)
-                    .AddFilter("System", LogLevel.Warning)
-                    .AddFilter("NonHostConsoleApp.Program", LogLevel.Debug)
-                    .AddConsole();
-            });
-            ILogger logger = loggerFactory.CreateLogger<Program>();
+                if (documentResults.HasError)
+                {
+                    logger.LogError($"  Error!");
+                    logger.LogError($"  Document error code: {documentResults.Error.ErrorCode}.");
+                    logger.LogError($"  Message: {documentResults.Error.Message}");
+                    continue;
+                }
 
-            string document = @"The extractive summarization feature uses natural language processing techniques to locate key sentences in an unstructured text document. 
-                These sentences collectively convey the main idea of the document. This feature is provided as an API for developers. 
-                They can use it to build intelligent solutions based on the relevant information extracted to support various use cases. 
-                In the public preview, extractive summarization supports several languages. It is based on pretrained multilingual transformer models, part of our quest for holistic representations. 
-                It draws its strength from transfer learning across monolingual and harness the shared nature of languages to produce models of improved quality and efficiency.";
+                summarizedText.AppendLine($"  Extracted the following {documentResults.Sentences.Count} sentence(s):");
 
-            var client = new TextAnalyticsClient(endpoint, credentials);
-            
-            // analyze document text using Azure Cognitive Language Services
-            var summarizedText = await AISummarizeText(client, document, logger);
-            
-            Console.WriteLine(summarizedText);
+
+                foreach (SummarySentence sentence in documentResults.Sentences)
+                {
+                    summarizedText.AppendLine($"  Sentence: {sentence.Text}");
+                }
+            }
         }
     }
+
+    logger.LogInformation("Returning summarized text: {0}{1}", Environment.NewLine, summarizedText.ToString());
+    return summarizedText.ToString();
 }
+
+//app should now have DI, Logging, Config, and Environment info. Including all env vars, user secrets, and appsettings files if they exist.
+//env vars was fine, you don't have to do this, but I thought I would show you in case you wanted the capabilities.
+var app = Host.CreateApplicationBuilder().Build();
+
+//In WebApps these are properties on app, we should change that in .NET so these 2 lines and their usings go away.
+var config = app.Services.GetService<IConfiguration>();
+var logger = app.Services.GetService<ILogger<Program>>();
+
+var credentials = new AzureKeyCredential(config["AI_SECRET"] ?? "SETCONFIG!");
+var endpoint = new Uri(config["AI_URL"] ?? "SETCONFIG!");
+
+string document = @"The extractive summarization feature uses natural language processing techniques to locate key sentences in an unstructured text document. 
+    These sentences collectively convey the main idea of the document. This feature is provided as an API for developers. 
+    They can use it to build intelligent solutions based on the relevant information extracted to support various use cases. 
+    In the public preview, extractive summarization supports several languages. It is based on pretrained multilingual transformer models, part of our quest for holistic representations. 
+    It draws its strength from transfer learning across monolingual and harness the shared nature of languages to produce models of improved quality and efficiency.";
+
+var client = new TextAnalyticsClient(endpoint, credentials);
+
+// analyze document text using Azure Cognitive Language Services
+var summarizedText = await AISummarizeText(client, document, logger);
+
+Console.WriteLine(summarizedText);
